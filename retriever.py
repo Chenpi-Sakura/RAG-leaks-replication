@@ -38,6 +38,10 @@ class BaseRetriever(abc.ABC):
         """仅 dense retriever 适用；BM25 / mock raise NotImplementedError。"""
         raise NotImplementedError(f"{self.kind} retriever 不支持 encode()")
 
+    def encode_batch(self, texts: List[str]) -> np.ndarray:
+        """批量编码；默认实现逐个调 encode()。GPU dense 类会重写以走 batched forward。"""
+        return np.stack([self.encode(t) for t in texts])
+
     def warmup(self, texts: List[str]):
         """可选：批量预热缓存（仅 DenseRetriever 实现）。"""
         pass
@@ -50,14 +54,18 @@ class BaseRetriever(abc.ABC):
 class DenseRetriever(BaseRetriever):
     """FAISS IndexFlatL2 + SentenceTransformer。共享文本级 cache。"""
 
-    def __init__(self, model_name: str, kind: str):
+    def __init__(self, model_name: str, kind: str, device: str = "auto"):
         super().__init__(kind=kind, name=model_name)
         from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(model_name)
+        if device == "auto":
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+        self.model = SentenceTransformer(model_name, device=device)
         self._cache: Dict[str, np.ndarray] = {}
         self.index = None
         self.docs: List[str] = []
-        print(f"[DenseRetriever/{kind}] loaded {model_name} (dim={self.model.get_sentence_embedding_dimension()})")
+        print(f"[DenseRetriever/{kind}] loaded {model_name} on {device} (dim={self.model.get_sentence_embedding_dimension()})")
 
     def encode(self, text: str) -> np.ndarray:
         if text not in self._cache:
@@ -65,24 +73,34 @@ class DenseRetriever(BaseRetriever):
             self._cache[text] = emb.astype("float32")
         return self._cache[text]
 
+    def encode_batch(self, texts: List[str]) -> np.ndarray:
+        """批量编码：cache 命中跳过，未命中的一次性 forward（GPU 上少 Python overhead）。"""
+        uncached = [t for t in texts if t not in self._cache]
+        if uncached:
+            embs = self.model.encode(uncached, normalize_embeddings=True, batch_size=64)
+            for t, e in zip(uncached, embs):
+                self._cache[t] = e.astype("float32")
+        return np.stack([self.encode(t) for t in texts])
+
     def warmup(self, texts: List[str]):
         """批量预热：避免影子 RAG × 8000 docs 重复编码。"""
         uncached = [t for t in texts if t not in self._cache]
         if not uncached:
             return
-        embs = self.model.encode(uncached, normalize_embeddings=True, batch_size=64)
+        embs = self.model.encode(uncached, normalize_embeddings=True, batch_size=256)
         for t, e in zip(uncached, embs):
             self._cache[t] = e.astype("float32")
         print(f"[DenseRetriever/{self.kind}] warmup cached {len(uncached)} texts (total: {len(self._cache)})")
 
     def build_index(self, docs: List[str]):
         self.docs = docs
-        embeddings = np.stack([self.encode(t) for t in docs])
+        # 一次性 batch encode（含 cache 命中跳过），避免 8000 次 .encode() Python 调用
+        embeddings = self.encode_batch(docs)
         import faiss
         dim = embeddings.shape[1]
         self.index = faiss.IndexFlatL2(dim)
         self.index.add(embeddings)
-        print(f"[DenseRetriever/{self.kind}] FAISS IndexFlatL2 built: {len(docs)} docs, dim={dim}")
+        print(f"[DenseRetriever/{self.kind}] FAISS IndexFlatL2 built: {len(docs)} docs, dim={dim}, device={self.device}")
 
     def retrieve(self, query: str, top_k: int) -> List[str]:
         if self.index is None or not self.docs:
@@ -160,24 +178,25 @@ class MockRetriever(BaseRetriever):
 # 工厂：从 RAGConfig 构造
 # ============================================================================
 
-def build_retriever_from_config(embedding_model: str):
+def build_retriever_from_config(embedding_model: str, device: str = "auto"):
     """
     embedding_model 取值:
       minilm / MiniLM / all-MiniLM-L6-v2 → FAISS + MiniLM
       bge    / BGE / BAAI/bge-*           → FAISS + BGE-en
       bm25   / bm25-okapi                 → rank_bm25 稀疏
       mock   / random                     → 随机向量
+    device: "auto" / "cuda" / "cpu" / "cuda:0"
     """
     if embedding_model in ("mock", "random"):
         return MockRetriever()
     if embedding_model in ("bm25", "bm25-okapi"):
         return BM25Retriever()
     if embedding_model.startswith("BAAI/") or embedding_model.lower() == "bge":
-        return DenseRetriever(model_name=embedding_model, kind="bge")
+        return DenseRetriever(model_name=embedding_model, kind="bge", device=device)
     if "MiniLM" in embedding_model or embedding_model == "minilm":
         return DenseRetriever(
             model_name="all-MiniLM-L6-v2" if embedding_model == "minilm" else embedding_model,
-            kind="minilm",
+            kind="minilm", device=device,
         )
     print(f"[RetrieverFactory] 未知 embedding_model='{embedding_model}', fallback 到 minilm")
-    return DenseRetriever(model_name="all-MiniLM-L6-v2", kind="minilm")
+    return DenseRetriever(model_name="all-MiniLM-L6-v2", kind="minilm", device=device)

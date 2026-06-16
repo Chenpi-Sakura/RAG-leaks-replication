@@ -33,5 +33,63 @@
 
 本工程针对工程化落地做出了以下设计优化：
 1. **纯内存 RAG 检索**：为了支撑极端耗时的影子知识库动态生成（每个测试样本都需要重新构建 16 个知识库），系统底层移除了传统数据库（如 pgvector），采用完全基于内存的 **FAISS** 实现，以提供极致的建库和检索速度。
-2. **热切换 LLM 服务 (`llm_service.py`)**：预留了基于 `transformers` (支持 Unsloth 优化) 的本地推理类，以及基于外部 API 调用的推理类。你可以将其作为独立的内部服务使用。
-3. **本地化数据流 (`data_manager.py`)**：剥离了复杂的在线下载逻辑，仅从本地 `./data/` 目录加载你的私有业务数据，便于你在企业内部环境运行。
+2. **热切换 LLM 服务 (`llm_service.py`)**：4 个 LLM 后端（echo / openai 兼容 / vllm-server / vllm-local）通过 `BaseLLM` ABC 抽象，`build_llm_from_env()` 工厂从 `.env` 自动装配。
+3. **可切换 Retriever (`retriever.py`)**：4 个检索器（minilm / bge / bm25 / mock）通过 `BaseRetriever` ABC 抽象，对应论文 §5.2 默认 + §6 消融。
+4. **配置化实验 (`config.py` + `configs/`)**：所有实验参数走 YAML 配置文件，命令行只接 `--config <path>` 切换。
+5. **多 seed 跑 + 聚合统计 (`main.py`)**：默认 5 个 seed 跑均值±标准差，输出 `aggregate_metrics.json` 可直接贴论文表格。
+6. **本地化数据流 (`data_manager.py`)**：剥离了复杂的在线下载逻辑，仅从本地 `./data/` 目录加载你的私有业务数据，便于你在企业内部环境运行。
+
+---
+
+## 🚀 快速开始
+
+### 1. 安装（注意顺序）
+
+```bash
+# ⚠️ 关键：先装 vllm（拉它兼容的 torch/transformers），
+#          再装其他（适配已装的 torch）
+pip install vllm
+pip install -r requirements.txt --no-deps
+# --no-deps 阻止 pip 重新解析 torch 依赖，避免和 vllm 冲突
+```
+
+> 装不上时切阿里云镜像（仅当 pypi 装不上时）：
+> ```bash
+> pip install -i https://mirrors.aliyun.com/pypi/simple/ vllm
+> pip install -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt --no-deps
+> ```
+
+### 2. 配置
+
+```bash
+cp .env.example .env
+# 编辑 .env 填 LLM_KIND / LLM_MODEL / LLM_API_KEY 等
+```
+
+### 3. 跑实验
+
+```bash
+# 跑论文主表第一行（Llama-3-8B × HealthCareMagic）
+# .env 里切 LLM_KIND=vllm-local + LLM_PATH=meta-llama/Meta-Llama-3-8B-Instruct
+python main.py --config configs/llama3-8b-healthcaremagic.yaml
+
+# Windows 终端要加 UTF-8 前缀
+PYTHONIOENCODING=utf-8 python main.py --config configs/llama3-8b-healthcaremagic.yaml
+```
+
+---
+
+## ⚡ GPU 配置
+
+不同硬件显存预算：
+
+| 硬件 | LLM_GPU_MEM_UTIL | `rag.device` (yaml) | 说明 |
+|---|---|---|---|
+| 单卡 24GB 跑 8B | 0.85 | auto | vLLM 拿 20GB，剩 4GB 给 embedder |
+| 单卡 16GB 跑 8B | 0.80 | auto | vLLM 拿 13GB，剩 3GB |
+| 单卡 24GB 跑 70B | 0.92 | **cpu** | 70B 几乎吃满，embedder 必须 CPU |
+| 多卡 2×24GB | 0.85 | cuda:1 | vLLM 锁第 0 卡，embedder 锁第 1 卡 |
+| 没 GPU | N/A | cpu | vLLM 跑不起来，要换 OpenAICompatLLM |
+
+> `LLM_GPU_MEM_UTIL` 在 `.env` 里设（默认 0.85）。
+> `rag.device` 在 `configs/*.yaml` 里设（默认 `auto`）。

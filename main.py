@@ -10,6 +10,7 @@ DC-MIA 实验主入口。
 """
 import argparse
 import json
+import os
 import random
 import shutil
 import time
@@ -20,6 +21,35 @@ import numpy as np
 from dotenv import load_dotenv
 
 load_dotenv()  # 必须在 import llm_service 之前
+
+
+def _check_compat():
+    """启动时检查 torch/transformers/sentence-transformers 版本与 GPU 可用性。"""
+    try:
+        import torch
+        cuda_ok = torch.cuda.is_available()
+        n_gpu = torch.cuda.device_count() if cuda_ok else 0
+        torch_v = torch.__version__
+    except ImportError:
+        torch_v, cuda_ok, n_gpu = "?", False, 0
+    try:
+        import transformers
+        tf_v = transformers.__version__
+    except ImportError:
+        tf_v = "?"
+    try:
+        import sentence_transformers
+        st_v = sentence_transformers.__version__
+    except ImportError:
+        st_v = "?"
+    print(f"[Compat] torch={torch_v}  transformers={tf_v}  sentence-transformers={st_v}  "
+          f"cuda={cuda_ok}  n_gpu={n_gpu}")
+    if not cuda_ok and os.environ.get("LLM_KIND") == "vllm-local":
+        print("[Compat] WARNING: LLM_KIND=vllm-local 需要 GPU，但 CUDA 不可用；"
+              "请改用 vllm-server / openai / echo")
+
+
+_check_compat()
 
 from config import ExperimentConfig
 from data_manager import DataManager
@@ -56,7 +86,7 @@ def run_one_seed(cfg: ExperimentConfig, seed: int, out_dir: Path) -> dict:
     )
 
     # 2) Retriever（一次构造，跨 RAG 共享）
-    retriever = build_retriever_from_config(cfg.rag.embedding_model)
+    retriever = build_retriever_from_config(cfg.rag.embedding_model, device=cfg.rag.device)
     # Warmup 仅对 dense 类有意义；BM25/mock 自动 no-op
     retriever.warmup([d["answer"] for d in raw])
     retriever.warmup([d["query"]  for d in raw])

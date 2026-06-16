@@ -1,27 +1,30 @@
-# ===== LLM 客户端 =====
-openai>=1.30,<2.0
+# =================================================================
+# RAG-leaks 复现 - 依赖清单
+# -----------------------------------------------------------------
+# ⚠️ 安装顺序：先装 vllm（拉它兼容的 torch/transformers），
+#             再装其他（适配已装的 torch）。不要重排！
+#   pip install vllm
+#   pip install -r requirements.txt --no-deps
+# -----------------------------------------------------------------
+# 不锁版本号：vllm 决定 torch/transformers 版本，其他包适配。
+# =================================================================
 
-# ===== 本地推理 =====
-# vllm 会自动拉取 torch / transformers 等依赖，无需重复列
-vllm>=0.5.0
+# LLM 客户端
+openai
 
-# ===== 嵌入 / 检索 =====
-sentence-transformers>=2.7
-faiss-cpu>=1.8
-rank-bm25>=0.2
+# 本地推理（vllm 自动拉 torch / transformers；不要重复列）
+vllm
 
-# ===== 多模态图像 =====
-Pillow>=10.0
+# 嵌入 / 检索
+sentence-transformers
+faiss-cpu
+rank-bm25
+Pillow
 
-# ===== 工具 =====
-python-dotenv>=1.0,<2.0
-tenacity>=8.2
-huggingface-hub>=0.23
-numpy>=1.24,<2.0
-scipy>=1.11
-scikit-learn>=1.3
-
-# ===== 故意省略 =====
-# torch        — vllm 自动拉
-# transformers — vllm / sentence-transformers 自动拉
-# unsloth      — 本项目不用，按需 pip install unsloth
+# 工具
+python-dotenv
+tenacity
+huggingface-hub
+numpy
+scipy
+scikit-learn

@@ -211,8 +211,13 @@ class VLLMLibraryLLM(BaseLLM):
         chat_template: ChatTemplate = "auto",
         max_model_len: int = 4096,
         supports_multimodal: Optional[bool] = None,
-        gpu_memory_utilization: float = 0.9,
+        gpu_memory_utilization: Optional[float] = None,
     ):
+        # gpu_memory_utilization 优先从 env 读 (LLM_GPU_MEM_UTIL)，默认 0.85
+        # 同卡共享 embedder 时建议 0.7-0.85；单独 vLLM 时可 0.9
+        if gpu_memory_utilization is None:
+            gpu_memory_utilization = float(os.environ.get("LLM_GPU_MEM_UTIL", "0.85"))
+
         # 自动检测多模态
         if supports_multimodal is None:
             supports_multimodal = self._detect_multimodal(model_path)
@@ -235,7 +240,13 @@ class VLLMLibraryLLM(BaseLLM):
             kwargs["limit_mm_per_prompt"] = {"image": 1}
 
         self._llm = LLM(**kwargs)
-        print(f"[VLLMLibraryLLM] loaded {model_path} (multimodal={supports_multimodal})")
+        try:
+            import torch
+            n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        except ImportError:
+            n_gpu = 0
+        print(f"[VLLMLibraryLLM] loaded {model_path} (multimodal={supports_multimodal}, "
+              f"gpu={n_gpu}, mem_util={gpu_memory_utilization})")
 
     @staticmethod
     def _detect_multimodal(model_path: str) -> bool:

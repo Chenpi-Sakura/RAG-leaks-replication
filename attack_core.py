@@ -119,25 +119,42 @@ class DCMIA:
     # ------------------------------------------------------------------ #
 
     def _compute_lr(self, target_rag, target_sample, m: int) -> float:
-        """纯算似然比（无 τ₁/τ₂ 判定），给阶段 2 和 find_tau_2 共用。"""
-        ans_target = target_rag.generate_answer(target_sample["query"])
-        actual_sim = self.calculate_similarity(ans_target, target_sample["answer"])
+        """纯算似然比（无 τ₁/τ₂ 判定），给阶段 2 和 find_tau_2 共用。
 
-        in_sims, out_sims = [], []
+        性能：把 2m 个 LLM 输出的相似度计算改成一次 batch encode（GPU 上少 Python overhead）。
+        """
+        ans_target = target_rag.generate_answer(target_sample["query"])
+
+        out_preds, in_preds = [], []
         for _ in range(m):
             bg = random.sample(self.data_pool, 8000) if len(self.data_pool) >= 8000 else list(self.data_pool)
 
             out_rag = SimpleRAG(llm_service=self.llm_service, retriever=self.retriever)
             out_rag.build_index(bg)
-            out_sims.append(self.calculate_similarity(
-                out_rag.generate_answer(target_sample["query"]), target_sample["answer"]))
+            out_preds.append(out_rag.generate_answer(target_sample["query"]))
 
             in_data = bg.copy()
             in_data[0] = target_sample
             in_rag = SimpleRAG(llm_service=self.llm_service, retriever=self.retriever)
             in_rag.build_index(in_data)
-            in_sims.append(self.calculate_similarity(
-                in_rag.generate_answer(target_sample["query"]), target_sample["answer"]))
+            in_preds.append(in_rag.generate_answer(target_sample["query"]))
+
+        # ★ 一次性 batch encode：1 target + m out + m in + 1 truth
+        all_texts = [ans_target] + out_preds + in_preds + [target_sample["answer"]]
+        try:
+            all_embs = self.retriever.encode_batch(all_texts)
+            target_emb = all_embs[0]
+            out_embs = all_embs[1:1 + m]
+            in_embs = all_embs[1 + m:1 + 2 * m]
+            truth_emb = all_embs[1 + 2 * m]
+            actual_sim = float(np.dot(target_emb, truth_emb))
+            out_sims = [float(np.dot(e, truth_emb)) for e in out_embs]
+            in_sims = [float(np.dot(e, truth_emb)) for e in in_embs]
+        except NotImplementedError:
+            # BM25 / mock 走不到 batch encode，退到单次调用
+            actual_sim = self.calculate_similarity(ans_target, target_sample["answer"])
+            out_sims = [self.calculate_similarity(p, target_sample["answer"]) for p in out_preds]
+            in_sims = [self.calculate_similarity(p, target_sample["answer"]) for p in in_preds]
 
         mu_in, std_in = norm.fit(in_sims)
         mu_out, std_out = norm.fit(out_sims)
