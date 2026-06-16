@@ -1,65 +1,45 @@
+"""
+基于 FAISS（内存版）的简化 RAG 系统。
+
+当前实现是 mock（随机 embedding + print 占位）；
+真实 all-MiniLM-L6-v2 + faiss.IndexFlatL2 接入留给后续 PR。
+"""
 import numpy as np
 from typing import List, Dict
-import os
+
 
 class SimpleRAG:
-    """
-    一个基于 FAISS (内存版) 的简化 RAG 系统。
-    提供快速的 Index 构建、相似度检索和 LLM 生成。
-    """
-    def __init__(self, llm_service, embedding_model=None):
+    def __init__(self, llm_service, top_k: int = 4, prompt_template: str = None):
         self.llm = llm_service
+        self.top_k = top_k
+        self.prompt_template = prompt_template or (
+            "Please answer the question based on the provided context.\n"
+            "Context: {context}\nQuestion: {question}"
+        )
         self.index = None
         self.texts = []
-        
-        # 为了避免重依赖，此处 Mock Embedding 模型。
-        # 真实环境中应该使用: 
-        # from sentence_transformers import SentenceTransformer
-        # self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
-        self.embedder = embedding_model
-        
-        self.is_mock_embed = (self.embedder is None)
+        self.embedder = None          # 真实 SentenceTransformer 由后续 PR 注入
+        self.is_mock_embed = True
         if self.is_mock_embed:
-            print("[SimpleRAG] 正在使用 Mock Embedder (随机向量) 加速测试...")
+            print("[SimpleRAG] 使用 Mock Embedder（随机向量）...")
 
     def _get_embedding(self, text: str) -> np.ndarray:
         if self.is_mock_embed:
-            # 返回随机 384 维向量 (MiniLM 的维度)
-            return np.random.rand(384).astype('float32')
-        # return self.embedder.encode(text).astype('float32')
+            return np.random.rand(384).astype("float32")
         return None
 
     def build_index(self, data: List[Dict]):
-        """
-        根据输入数据列表构建 FAISS 索引。
-        """
-        # import faiss
-        # self.texts = [d['answer'] for d in data] # 真实 RAG 这里存的应该是上下文段落
-        # embeddings = np.array([self._get_embedding(t) for t in self.texts])
-        # dim = embeddings.shape[1]
-        # self.index = faiss.IndexFlatL2(dim)
-        # self.index.add(embeddings)
-        print(f"[SimpleRAG] 成功构建包含 {len(data)} 条数据的 FAISS 索引 (Mock).")
-        
-    def retrieve(self, query: str, top_k: int = 4) -> List[str]:
-        """
-        返回检索到的 Top-K 上下文文本。
-        """
-        # if self.index is None: return []
-        # q_emb = self._get_embedding(query).reshape(1, -1)
-        # distances, indices = self.index.search(q_emb, top_k)
-        # return [self.texts[i] for i in indices[0] if i < len(self.texts)]
-        
-        return [f"Mocked context {i} for {query}" for i in range(top_k)]
+        self.texts = [d.get("answer", "") for d in data]
+        # 真实环境会调 faiss.IndexFlatL2 建索引
+        print(f"[SimpleRAG] 构建包含 {len(data)} 条数据的索引 (Mock).")
+
+    def retrieve(self, query: str, top_k: int = None) -> List[str]:
+        k = top_k or self.top_k
+        # 真实环境会跑 faiss 检索
+        return [f"Mocked context {i} for {query}" for i in range(k)]
 
     def generate_answer(self, query: str) -> str:
-        """
-        端到端：检索 + 生成
-        """
         contexts = self.retrieve(query)
         context_str = "\n".join(contexts)
-        
-        prompt = f"Please answer the question based on the provided context.\nContext: {context_str}\nQuestion: {query}"
-        
-        answer = self.llm.generate(prompt)
-        return answer
+        prompt = self.prompt_template.format(context=context_str, question=query)
+        return self.llm.generate(prompt)

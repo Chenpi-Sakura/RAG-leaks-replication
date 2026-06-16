@@ -1,0 +1,34 @@
+# 论文 RAG-leaks §6 主表第一行：Llama-3-8B × HealthCareMagic
+# 跑法：python main.py --config configs/llama3-8b-healthcaremagic.yaml
+# 注意：.env 里要把 LLM_KIND 切到能加载 meta-llama/Meta-Llama-3-8B-Instruct 的后端
+#       推荐 vllm-local 或 vllm-server；远程 API 请改 LLM_MODEL=对应名字
+
+experiment:
+  name: "llama3-8b-healthcaremagic"
+  seed: 42
+  seeds: [0, 1, 2, 3, 4]                  # 默认 5 个 seed 跑 mean ± std
+  output_dir: "./results"
+
+dataset:
+  name: "healthcaremagic"
+  hf_dataset_id: "lukasellinger/HealthCareMagic-100k-HF"  # 实际跑时按需修改
+  total_samples: 12000                    # dummy 模式才用
+  target_kb_size: 8000
+  eval_members: 1000
+  eval_non_members: 1000
+  aux_members: 100
+  aux_non_members: 100
+
+rag:
+  embedding_model: "all-MiniLM-L6-v2"
+  top_k: 4
+  prompt_template: |
+    Please answer the question based on the provided context.
+    Context: {context}
+    Question: {question}
+
+attack:
+  m: 8                                    # 影子 RAG 对数（论文消融：16 最优）
+  tau_1: auto                             # auto = 在 aux_data 上扫最优
+  tau_2: auto                             # auto = 在混淆区扫最优
+  per_sample_seed: true                   # 影子 RAG 抽样用 sample_id 作种子

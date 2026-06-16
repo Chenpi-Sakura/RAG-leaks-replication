@@ -1,26 +1,29 @@
+"""
+评测模块：AUC + TPR @ 1% FPR。
+返回 dict（除了 print 之外），便于 main.py 序列化到 metrics.json。
+"""
 import numpy as np
 from sklearn.metrics import roc_curve, auc
 
+
 class Evaluator:
-    """
-    负责评测指标计算 (AUC, TPR @ 1% FPR)
-    """
     @staticmethod
-    def calculate_metrics(y_true, y_scores):
+    def calculate_metrics(y_true, y_scores) -> dict:
         """
-        y_true: 真实标签，1 为成员，0 为非成员
-        y_scores: 攻击输出的置信度/分数 (例如似然比)
+        y_true: 真实标签，1=成员, 0=非成员
+        y_scores: 攻击输出（似然比或 999）
+
+        返回 {"auc": float, "tpr_at_1_fpr": float}
         """
-        fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+        if len(set(y_true)) < 2:
+            print(f"[Evaluator] 警告: y_true 单一类别，metrics 无效")
+            return {"auc": float("nan"), "tpr_at_1_fpr": 0.0}
+
+        fpr, tpr, _ = roc_curve(y_true, y_scores)
         roc_auc = auc(fpr, tpr)
-        
-        # 寻找 FPR <= 0.01 时的最大 TPR
-        # tpr_at_1_fpr
+
         idx = np.where(fpr <= 0.01)[0]
-        if len(idx) > 0:
-            tpr_at_1_fpr = tpr[idx[-1]]
-        else:
-            tpr_at_1_fpr = 0.0
-            
-        print(f"[Evaluator] 评测完成: AUC = {roc_auc:.4f}, TPR @ 1% FPR = {tpr_at_1_fpr:.4f}")
-        return roc_auc, tpr_at_1_fpr
+        tpr_at_1_fpr = float(tpr[idx[-1]]) if len(idx) > 0 else 0.0
+
+        print(f"[Evaluator] AUC = {roc_auc:.4f}  TPR@1%FPR = {tpr_at_1_fpr:.4f}")
+        return {"auc": float(roc_auc), "tpr_at_1_fpr": tpr_at_1_fpr}

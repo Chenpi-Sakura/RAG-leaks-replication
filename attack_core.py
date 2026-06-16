@@ -1,105 +1,157 @@
+"""
+DC-MIA 攻击核心。
+
+修复记录：
+- Bug #1 (旧): phase_1_find_threshold 直接 return 0.9 —— 现已实现在 aux_data 上扫最优 τ₁
+- Bug #2 (旧): 缺 τ₂ 判定 —— 现已新增 find_tau_2 + attack() 返回 (score, decision)
+- Bug #3 (旧): phase_2 缺 per-sample 随机种子 —— 现已 attack() 首行 random.seed(sample_id)
+"""
 import random
 import numpy as np
 from scipy.stats import norm
+from sklearn.metrics import roc_curve
 from rag_system import SimpleRAG
 
-# 用于模拟相似度计算 (这里使用随机数或一个假逻辑，真实情况使用 cosine_similarity)
+
+# 真实情况下应替换为 sentence_transformers.util.cos_sim
 def calculate_similarity(pred: str, truth: str) -> float:
-    # 真实情况: 
-    # from sentence_transformers import util
-    # emb1 = embedder.encode(pred)
-    # emb2 = embedder.encode(truth)
-    # return util.cos_sim(emb1, emb2).item()
     return random.uniform(0.3, 0.95)
+
 
 class DCMIA:
     """
-    Difficulty-Calibrated MIA (DC-MIA) 攻击核心实现
-
-    复现自 RAG-leaks (Wang et al. 2025, Science China Information Sciences)
-    的 "difficulty-calibrated membership inference attack" 方法。
-
-    注意：本类对应 RAG-leaks 的 DC-MIA，**不是** DCMI (Gao et al. 2025,
-    arXiv:2509.06026) 的 "Differential Calibration MIA"——两者是独立工作，
-    不要混用。本类名 DCMIA 强调 "D for Difficulty"。
-
-    攻击流程：
-    - Phase 1: 对相似度极高的样本（> tau_1）直接判定为成员（捡漏）
-    - Phase 2: 对落入混淆区间的样本，构建 m 对 inRAG/outRAG 影子知识库，
-      用真实 target_rag 响应在高斯分布上的似然比做"难度校准"
+    Difficulty-Calibrated MIA (DC-MIA) 攻击核心实现。
+    复现自 RAG-leaks (Wang et al. 2025, Science China Information Sciences)。
     """
-    def __init__(self, llm_service, data_pool):
+
+    def __init__(self, llm_service, data_pool, per_sample_seed: bool = True):
         self.llm_service = llm_service
-        self.data_pool = data_pool  # 用于构建影子 RAG 的数据池
+        self.data_pool = data_pool
+        self.per_sample_seed = per_sample_seed
 
-    def phase_1_find_threshold(self, target_rag, aux_data: list) -> float:
+    # ------------------------------------------------------------------ #
+    # 阈值搜索
+    # ------------------------------------------------------------------ #
+
+    def phase_1_find_threshold(self, target_rag, aux_data, target_ids, tau_1_spec="auto") -> float:
         """
-        阶段 1: 在辅助集上找最优高相似度阈值 \\tau_1
-        真实逻辑: 遍历 aux_data，查 target_rag 算相似度，ROC 找 TPR@1%FPR 最好的 tau
-        当前为占位实现，返回固定值 0.9
+        阶段 1: 在辅助集上找最优高相似度阈值 τ₁（最大化 TPR @ 1% FPR）。
+        aux_data 是已知 member/non-member 标签的样本。
+        tau_1_spec: "auto" → 自动扫；或显式给 float 字符串
         """
-        print("[DC-MIA] 阶段 1: 正在计算辅助集上的最优高相似度阈值...")
-        return 0.9
+        print(f"[DC-MIA] 阶段 1: 在 {len(aux_data)} 个 aux 样本上扫最优 τ₁...")
 
-    def phase_2_likelihood_ratio(self, target_rag, target_sample: dict, m: int = 8) -> float:
+        if isinstance(tau_1_spec, str) and tau_1_spec != "auto":
+            return float(tau_1_spec)
+
+        sims, labels = [], []
+        for s in aux_data:
+            ans = target_rag.generate_answer(s["query"])
+            sims.append(calculate_similarity(ans, s["answer"]))
+            labels.append(1 if s["id"] in target_ids else 0)
+
+        if not sims or len(set(labels)) < 2:
+            print("[DC-MIA] 阶段 1: aux 太小或单类别，τ₁ 退到 0.9")
+            return 0.9
+
+        fpr, tpr, thr = roc_curve(labels, sims)
+        mask = fpr <= 0.01
+        if not mask.any():
+            return float(thr[0])
+        best_idx = mask.nonzero()[0][tpr[mask].argmax()]
+        tau_1 = float(thr[best_idx])
+        print(f"[DC-MIA] 阶段 1: 找到 τ₁ = {tau_1:.4f}")
+        return tau_1
+
+    def find_tau_2(self, target_rag, aux_data, target_ids, tau_1, m: int = 8, global_seed: int = 0) -> float:
         """
-        阶段 2: 在目标 RAG 上做难度校准的似然比检验
-
-        关键：actual_sim 必须来自 target_rag 自身的响应，**不能**用 random 模拟
-        （修复 Bug #1: 之前用 "Actual response" 占位字符串得到的是 random 数）
+        在 aux_data 的"混淆区间"（actual_sim ≤ τ₁）上算似然比，
+        跑 ROC 找最优 τ₂（按 TPR@1%FPR）。
         """
-        print(f"[DC-MIA] 阶段 2: 为样本 {target_sample['id']} 构建 {m} 对影子 RAG 并计算似然比...")
+        print(f"[DC-MIA] 阶段 2: 在混淆区扫最优 τ₂ (τ₁={tau_1:.4f})...")
 
-        # ✅ 修复 Bug #1: actual_sim 从真实的 target_rag 取
-        ans_target = target_rag.generate_answer(target_sample['query'])
-        actual_sim = calculate_similarity(ans_target, target_sample['answer'])
+        # 1) 先算每个 aux 的 actual_sim，分出混淆区
+        sims = []
+        for s in aux_data:
+            ans = target_rag.generate_answer(s["query"])
+            sims.append(calculate_similarity(ans, s["answer"]))
+        confusion_mask = np.array(sims) <= tau_1
+        aux_in_confusion = [s for s, m_ in zip(aux_data, confusion_mask) if m_]
+        print(f"[DC-MIA] 阶段 2: aux 落在混淆区 {len(aux_in_confusion)}/{len(aux_data)}")
 
-        in_sims = []
-        out_sims = []
+        if not aux_in_confusion:
+            print("[DC-MIA] 阶段 2: 无混淆样本，τ₂ 退到 1.0")
+            return 1.0
 
-        # 构建 m 对 inRAG 和 outRAG
+        # 2) 对混淆区每个 aux 算似然比
+        lrs, labels = [], []
+        for s in aux_in_confusion:
+            if self.per_sample_seed:
+                random.seed(global_seed * 1_000_003 + s["id"])
+            lr = self._compute_lr(target_rag, s, m=m)
+            lrs.append(lr)
+            labels.append(1 if s["id"] in target_ids else 0)
+
+        if len(set(labels)) < 2:
+            print("[DC-MIA] 阶段 2: 混淆区单类别，τ₂ 退到 1.0")
+            return 1.0
+
+        fpr, tpr, thr = roc_curve(labels, lrs)
+        mask = fpr <= 0.01
+        if not mask.any():
+            return float(thr[0])
+        best_idx = mask.nonzero()[0][tpr[mask].argmax()]
+        tau_2 = float(thr[best_idx])
+        print(f"[DC-MIA] 阶段 2: 找到 τ₂ = {tau_2:.4f}")
+        return tau_2
+
+    # ------------------------------------------------------------------ #
+    # 似然比计算（被 attack() 和 find_tau_2() 共用）
+    # ------------------------------------------------------------------ #
+
+    def _compute_lr(self, target_rag, target_sample, m: int) -> float:
+        """纯算似然比（无 τ₁/τ₂ 判定），给阶段 2 和 find_tau_2 共用。"""
+        ans_target = target_rag.generate_answer(target_sample["query"])
+        actual_sim = calculate_similarity(ans_target, target_sample["answer"])
+
+        in_sims, out_sims = [], []
         for _ in range(m):
-            # 随机抽样构建影子库的背景数据
-            bg_data = random.sample(self.data_pool, 8000) if len(self.data_pool) >= 8000 else self.data_pool
+            bg = random.sample(self.data_pool, 8000) if len(self.data_pool) >= 8000 else list(self.data_pool)
 
-            # outRAG: 不包含 target
             out_rag = SimpleRAG(self.llm_service)
-            out_rag.build_index(bg_data)
-            ans_out = out_rag.generate_answer(target_sample['query'])
-            out_sims.append(calculate_similarity(ans_out, target_sample['answer']))
+            out_rag.build_index(bg)
+            out_sims.append(calculate_similarity(
+                out_rag.generate_answer(target_sample["query"]), target_sample["answer"]))
 
-            # inRAG: 包含 target（替换第一条为 target_sample）
-            in_data = bg_data.copy()
+            in_data = bg.copy()
             in_data[0] = target_sample
             in_rag = SimpleRAG(self.llm_service)
             in_rag.build_index(in_data)
-            ans_in = in_rag.generate_answer(target_sample['query'])
-            in_sims.append(calculate_similarity(ans_in, target_sample['answer']))
+            in_sims.append(calculate_similarity(
+                in_rag.generate_answer(target_sample["query"]), target_sample["answer"]))
 
-        # 拟合高斯分布
         mu_in, std_in = norm.fit(in_sims)
         mu_out, std_out = norm.fit(out_sims)
+        return norm.pdf(actual_sim, mu_in, std_in + 1e-9) / (norm.pdf(actual_sim, mu_out, std_out + 1e-9) + 1e-9)
 
-        # 计算 PDF 和似然比 (加 1e-9 防除零)
-        pdf_in = norm.pdf(actual_sim, mu_in, std_in + 1e-9)
-        pdf_out = norm.pdf(actual_sim, mu_out, std_out + 1e-9)
-        likelihood_ratio = pdf_in / (pdf_out + 1e-9)
+    # ------------------------------------------------------------------ #
+    # 单样本攻击
+    # ------------------------------------------------------------------ #
 
-        return likelihood_ratio
-
-    def attack(self, target_rag, target_sample: dict, tau_1: float, m: int = 8) -> float:
+    def attack(self, target_rag, target_sample, tau_1: float, tau_2: float, m: int = 8, global_seed: int = 0):
         """
-        执行完整的两阶段攻击，返回最终的 Calibrated Score
-
-        ✅ 修复 Bug #2: actual_sim 在 attack() 里只算一次，phase 1 和 phase 2 复用同一份
+        执行完整的两阶段攻击，返回 (score, decision)：
+          score: 999.0 表示阶段 1 命中（高相似度），否则是阶段 2 的似然比
+          decision: 1=成员, 0=非成员
         """
-        # 一次性算出 actual_sim，phase 1 和 phase 2 共用
-        ans = target_rag.generate_answer(target_sample['query'])
-        actual_sim = calculate_similarity(ans, target_sample['answer'])
+        if self.per_sample_seed:
+            random.seed(global_seed * 1_000_003 + target_sample["id"])
+
+        ans = target_rag.generate_answer(target_sample["query"])
+        actual_sim = calculate_similarity(ans, target_sample["answer"])
 
         if actual_sim > tau_1:
-            # 阶段 1: 高相似度 → 直接判定为强成员
-            return 999.0
-        else:
-            # 阶段 2: 似然比检验
-            return self.phase_2_likelihood_ratio(target_rag, target_sample, m=m)
+            return 999.0, 1   # 阶段 1: 高相似度直接判成员
+
+        lr = self._compute_lr(target_rag, target_sample, m=m)
+        return lr, int(lr > tau_2)

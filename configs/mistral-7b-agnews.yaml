@@ -1,0 +1,32 @@
+# 论文 RAG-leaks §6 主表第二行：Mistral-7B-Instruct-V02 × AgNews
+# 跑法：python main.py --config configs/mistral-7b-agnews.yaml
+
+experiment:
+  name: "mistral-7b-agnews"
+  seed: 42
+  seeds: [0, 1, 2, 3, 4]
+  output_dir: "./results"
+
+dataset:
+  name: "agnews"
+  hf_dataset_id: "fancyzhx/ag_news"
+  total_samples: 12000
+  target_kb_size: 8000
+  eval_members: 1000
+  eval_non_members: 1000
+  aux_members: 100
+  aux_non_members: 100
+
+rag:
+  embedding_model: "all-MiniLM-L6-v2"
+  top_k: 4
+  prompt_template: |
+    Please answer the question based on the provided context.
+    Context: {context}
+    Question: {question}
+
+attack:
+  m: 8
+  tau_1: auto
+  tau_2: auto
+  per_sample_seed: true
