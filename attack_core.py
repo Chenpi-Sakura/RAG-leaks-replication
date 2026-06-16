@@ -13,21 +13,30 @@ from sklearn.metrics import roc_curve
 from rag_system import SimpleRAG
 
 
-# 真实情况下应替换为 sentence_transformers.util.cos_sim
-def calculate_similarity(pred: str, truth: str) -> float:
-    return random.uniform(0.3, 0.95)
-
-
 class DCMIA:
     """
     Difficulty-Calibrated MIA (DC-MIA) 攻击核心实现。
     复现自 RAG-leaks (Wang et al. 2025, Science China Information Sciences)。
     """
 
-    def __init__(self, llm_service, data_pool, per_sample_seed: bool = True):
+    def __init__(self, llm_service, data_pool, retriever, per_sample_seed: bool = True):
         self.llm_service = llm_service
         self.data_pool = data_pool
+        self.retriever = retriever          # 提供 encode() 计算真实相似度
         self.per_sample_seed = per_sample_seed
+
+    def calculate_similarity(self, pred: str, truth: str) -> float:
+        """
+        用共享 retriever 算真实相似度。
+        - dense retriever: 真 cosine（两边 normalized → dot product）
+        - BM25 / mock: NotImplementedError → 退到 random 兜底（流程不崩，AUC 仍 ~0.5）
+        """
+        try:
+            pred_emb = self.retriever.encode(pred)
+            truth_emb = self.retriever.encode(truth)
+            return float(np.dot(pred_emb, truth_emb))
+        except NotImplementedError:
+            return random.uniform(0.3, 0.95)
 
     # ------------------------------------------------------------------ #
     # 阈值搜索
@@ -47,7 +56,7 @@ class DCMIA:
         sims, labels = [], []
         for s in aux_data:
             ans = target_rag.generate_answer(s["query"])
-            sims.append(calculate_similarity(ans, s["answer"]))
+            sims.append(self.calculate_similarity(ans, s["answer"]))
             labels.append(1 if s["id"] in target_ids else 0)
 
         if not sims or len(set(labels)) < 2:
@@ -74,7 +83,7 @@ class DCMIA:
         sims = []
         for s in aux_data:
             ans = target_rag.generate_answer(s["query"])
-            sims.append(calculate_similarity(ans, s["answer"]))
+            sims.append(self.calculate_similarity(ans, s["answer"]))
         confusion_mask = np.array(sims) <= tau_1
         aux_in_confusion = [s for s, m_ in zip(aux_data, confusion_mask) if m_]
         print(f"[DC-MIA] 阶段 2: aux 落在混淆区 {len(aux_in_confusion)}/{len(aux_data)}")
@@ -112,22 +121,22 @@ class DCMIA:
     def _compute_lr(self, target_rag, target_sample, m: int) -> float:
         """纯算似然比（无 τ₁/τ₂ 判定），给阶段 2 和 find_tau_2 共用。"""
         ans_target = target_rag.generate_answer(target_sample["query"])
-        actual_sim = calculate_similarity(ans_target, target_sample["answer"])
+        actual_sim = self.calculate_similarity(ans_target, target_sample["answer"])
 
         in_sims, out_sims = [], []
         for _ in range(m):
             bg = random.sample(self.data_pool, 8000) if len(self.data_pool) >= 8000 else list(self.data_pool)
 
-            out_rag = SimpleRAG(self.llm_service)
+            out_rag = SimpleRAG(llm_service=self.llm_service, retriever=self.retriever)
             out_rag.build_index(bg)
-            out_sims.append(calculate_similarity(
+            out_sims.append(self.calculate_similarity(
                 out_rag.generate_answer(target_sample["query"]), target_sample["answer"]))
 
             in_data = bg.copy()
             in_data[0] = target_sample
-            in_rag = SimpleRAG(self.llm_service)
+            in_rag = SimpleRAG(llm_service=self.llm_service, retriever=self.retriever)
             in_rag.build_index(in_data)
-            in_sims.append(calculate_similarity(
+            in_sims.append(self.calculate_similarity(
                 in_rag.generate_answer(target_sample["query"]), target_sample["answer"]))
 
         mu_in, std_in = norm.fit(in_sims)
@@ -148,7 +157,7 @@ class DCMIA:
             random.seed(global_seed * 1_000_003 + target_sample["id"])
 
         ans = target_rag.generate_answer(target_sample["query"])
-        actual_sim = calculate_similarity(ans, target_sample["answer"])
+        actual_sim = self.calculate_similarity(ans, target_sample["answer"])
 
         if actual_sim > tau_1:
             return 999.0, 1   # 阶段 1: 高相似度直接判成员

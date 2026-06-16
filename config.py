@@ -27,6 +27,12 @@ class DatasetConfig:
 
 @dataclass
 class RAGConfig:
+    # 可取值:
+    #   "minilm"            → FAISS + all-MiniLM-L6-v2（论文 §5.2 默认）
+    #   "bge"               → FAISS + BAAI/bge-small-en-v1.5（论文 §6 消融）
+    #   "bm25"              → rank_bm25 稀疏检索（论文 §6 消融）
+    #   "mock"              → 随机向量（dev/CI 用）
+    # 也接受完整 HF 模型名（如 "all-MiniLM-L6-v2" / "BAAI/bge-small-en-v1.5"）
     embedding_model: str = "all-MiniLM-L6-v2"
     top_k: int = 4
     prompt_template: str = (

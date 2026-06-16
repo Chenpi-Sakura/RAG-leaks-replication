@@ -45,8 +45,8 @@ class DataManager:
         for i in range(total_samples):
             dummy_data.append({
                 "id": i,
-                "query": f"Dummy query for sample {i}",
-                "answer": f"Dummy ground truth answer for sample {i}",
+                "query":  f"Question number {i} about topic {i % 50}",
+                "answer": f"Ground truth response {i} with details for topic {i % 50}.",
             })
         return dummy_data
 

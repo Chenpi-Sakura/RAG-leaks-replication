@@ -25,6 +25,7 @@ from config import ExperimentConfig
 from data_manager import DataManager
 from llm_service import build_llm_from_env
 from rag_system import SimpleRAG
+from retriever import build_retriever_from_config
 from attack_core import DCMIA
 from evaluator import Evaluator
 
@@ -54,10 +55,17 @@ def run_one_seed(cfg: ExperimentConfig, seed: int, out_dir: Path) -> dict:
         aux_non_members=cfg.dataset.aux_non_members,
     )
 
-    # 2) 组件
+    # 2) Retriever（一次构造，跨 RAG 共享）
+    retriever = build_retriever_from_config(cfg.rag.embedding_model)
+    # Warmup 仅对 dense 类有意义；BM25/mock 自动 no-op
+    retriever.warmup([d["answer"] for d in raw])
+    retriever.warmup([d["query"]  for d in raw])
+
+    # 3) 组件
     llm = build_llm_from_env()
     target_rag = SimpleRAG(
         llm_service=llm,
+        retriever=retriever,
         top_k=cfg.rag.top_k,
         prompt_template=cfg.rag.prompt_template,
     )
@@ -66,6 +74,7 @@ def run_one_seed(cfg: ExperimentConfig, seed: int, out_dir: Path) -> dict:
     attacker = DCMIA(
         llm_service=llm,
         data_pool=splits["reference_pool"],
+        retriever=retriever,
         per_sample_seed=cfg.attack.per_sample_seed,
     )
     target_ids = {s["id"] for s in splits["target_kb"]}

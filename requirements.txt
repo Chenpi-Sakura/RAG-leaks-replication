@@ -8,6 +8,7 @@ vllm>=0.5.0
 # ===== 嵌入 / 检索 =====
 sentence-transformers>=2.7
 faiss-cpu>=1.8
+rank-bm25>=0.2
 
 # ===== 多模态图像 =====
 Pillow>=10.0
