@@ -12,10 +12,36 @@
   healthcaremagic  — 医疗对话（论文 §5.1.1）
   agnews           — 新闻文本（论文 §5.1.2：前 10 词 = query，剩余 = answer）
   naturalquestions — 通用 QA（论文 §5.1.3 / §7.3）
+
+镜像支持：见 README "数据集加载" 章节；推荐用 hf-mirror.com 下载后存到 ./data/ 走 local 模式。
 """
 import os
 import json
 import random
+
+
+# 留个 hook：如果用户在 main.py 入口前 patch 了 HF_ENDPOINT（但 datasets 缓存问题
+# 已证实无法只靠 env var 解决），这里尝试用 MonkeyPatch 注入：
+def _try_setup_hf_mirror():
+    endpoint = os.environ.get("HF_ENDPOINT")
+    if not endpoint:
+        return
+    endpoint = endpoint.rstrip("/")
+    try:
+        import huggingface_hub.constants as _c
+        _c.ENDPOINT = endpoint
+        _c.HUGGINGFACE_CO_URL_TEMPLATE = endpoint + "/{repo_id}/resolve/{revision}/{filename}"
+    except Exception:
+        pass
+    try:
+        import datasets.config as _dc
+        _dc.HF_ENDPOINT = endpoint
+    except Exception:
+        pass
+    print(f"[DataManager] HF endpoint attempt -> {endpoint}")
+
+
+_try_setup_hf_mirror()
 
 
 class DataManager:
@@ -35,7 +61,20 @@ class DataManager:
         dataset_name: str = "dummy",
         hf_dataset_id: str = None,
     ):
-        """主入口：按 dataset_name 分发到对应加载器。"""
+        """主入口：按 dataset_name 分发到对应加载器。
+        优先尝试 local JSON（./data/{name}.json），其次 HF 加载，最后 dummy。
+        """
+        # 1) 优先 local JSON
+        local_path = os.path.join(self.data_dir, f"{dataset_name}.json")
+        if os.path.exists(local_path):
+            print(f"[DataManager] 加载本地 {local_path} ...")
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data = data[:total_samples]
+            print(f"[DataManager] 本地数据加载了 {len(data)} 条")
+            return data
+
+        # 2) HF 加载
         if dataset_name == "dummy":
             return self._generate_dummy(total_samples)
         if dataset_name == "healthcaremagic":

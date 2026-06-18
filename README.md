@@ -93,3 +93,70 @@ PYTHONIOENCODING=utf-8 python main.py --config configs/llama3-8b-healthcaremagic
 
 > `LLM_GPU_MEM_UTIL` 在 `.env` 里设（默认 0.85）。
 > `rag.device` 在 `configs/*.yaml` 里设（默认 `auto`）。
+
+---
+
+## 📦 数据集加载
+
+`data_manager.py` 按以下优先级加载数据：
+
+1. **本地 JSON**（推荐）：`./data/{dataset_name}.json`，格式 `[{"id", "query", "answer"}, ...]`
+2. **HF Hub**（如果本地没有）
+3. **Dummy 假数据**（仅 `dataset_name=dummy`）
+
+### 方式 A：直接 wget 镜像文件（最稳）
+
+```bash
+# 1. 用镜像下载（hf-mirror.com 不会被 GFW 拦）
+mkdir -p data
+wget -O data/healthcaremagic.jsonl "https://hf-mirror.com/datasets/wangrongsheng/HealthCareMagic-100k-en/resolve/main/data/train.jsonl"
+wget -O data/agnews.jsonl            "https://hf-mirror.com/datasets/fancyzhx/ag_news/resolve/main/data/train-00000-of-00001.parquet"
+
+# 2. jsonl → 我们的 JSON 格式（脚本见下方）
+python -c "
+import json
+with open('data/healthcaremagic.jsonl') as f:
+    rows = [json.loads(l) for l in f if l.strip()]
+data = []
+for i, r in enumerate(rows):
+    q, a = r.get('input', ''), r.get('output', '')
+    if not q or not a: continue
+    data.append({'id': i, 'query': q.strip(), 'answer': a.strip()})
+with open('data/healthcaremagic.json', 'w', encoding='utf-8') as f:
+    json.dump(data, f, ensure_ascii=False)
+print('Saved', len(data), 'samples')
+"
+
+# 3. 跑实验（data_manager 自动读 data/healthcaremagic.json）
+python main.py --config configs/llama3-8b-healthcaremagic.yaml
+```
+
+### 方式 B：snapshot_download 整目录
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com python -c "
+from huggingface_hub import snapshot_download
+path = snapshot_download(
+    repo_id='wangrongsheng/HealthCareMagic-100k-en',
+    repo_type='dataset',
+)
+print(path)  # 打印下载到哪
+# 然后转 JSON 放到 data/ 同上
+"
+```
+
+### 方式 C：直接设 HF_ENDPOINT（部分库不生效）
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com python main.py --config configs/llama3-8b-healthcaremagic.yaml
+# 注意：datasets 库的 endpoint 在 import 时冻结，env var 经常不生效；
+#       优先用方式 A/B
+```
+
+### 数据集 HF ID 推荐
+
+| 数据集 | 推荐 ID | 字段 |
+|---|---|---|
+| HealthCareMagic | `wangrongsheng/HealthCareMagic-100k-en` | input / output |
+| AgNews | `fancyzhx/ag_news` | text（论文 §5.1 切前 10 词） |
+| NaturalQuestions | `google-research-datasets/nq_open` | question / answer |
