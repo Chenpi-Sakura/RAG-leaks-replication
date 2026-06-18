@@ -12,6 +12,7 @@ S-MIA 基线（Li et al. 2024）。
 
 注：复用 `BaseRetriever.encode` 算 cosine；与 DC-MIA 共享 retriever 实例。
 """
+import random
 import numpy as np
 from sklearn.metrics import roc_curve
 
@@ -23,9 +24,18 @@ class SMIA:
         self.retriever = retriever
 
     def cosine(self, a: str, b: str) -> float:
-        a_emb = self.retriever.encode(a)
-        b_emb = self.retriever.encode(b)
-        return float(np.dot(a_emb, b_emb))
+        """
+        与 DCMIA.calculate_similarity 行为一致：
+          - dense retriever: 真 cosine
+          - BM25 / mock / ideal: NotImplementedError → 退到 random 兜底
+            （BM25 / ideal 没有 embedding 概念，硬算 cosine 无意义）
+        """
+        try:
+            a_emb = self.retriever.encode(a)
+            b_emb = self.retriever.encode(b)
+            return float(np.dot(a_emb, b_emb))
+        except NotImplementedError:
+            return random.uniform(0.3, 0.95)
 
     @staticmethod
     def _split_text(text: str, mode: str = "char") -> tuple:
