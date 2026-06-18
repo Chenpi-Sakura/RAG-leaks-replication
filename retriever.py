@@ -144,6 +144,55 @@ class BM25Retriever(BaseRetriever):
 
 
 # ============================================================================
+# Ideal Retriever: 完美检索（论文 §6.2.3 oracle）
+# ============================================================================
+
+class IdealRetriever(BaseRetriever):
+    """
+    论文 §6.2.3 消融：完美检索器（oracle）。
+    假设能精确返回 KB 中相关文档；对 member 的 query 返回其 answer + KB 中其他 doc；
+    对 non-member 的 query 返回 KB 中任意 top_k doc（模拟"完美但非成员也找不到"的边界）。
+
+    注意：本 retriever 不支持 encode()（raise NotImplementedError），所以
+    DCMIA.calculate_similarity 会退到 random 兜底，DC-MIA 在 ideal retriever 下
+    AUC ≈ 0.5（无法算真实 similarity）。IdealRetriever 主要用于：
+      1. 展示"完美检索下 LLM 自身的反应"（手动 inspect）
+      2. 与 DC-MIA 结合时仅观察 phase 1 的 sim 分布（不用 phase 2）
+    """
+
+    def __init__(self):
+        super().__init__(kind="ideal", name="ideal-oracle")
+        self.docs: List[str] = []
+        # query -> answer 的映射（build_index 时从 data list 构造）
+        self.q2a: Dict[str, str] = {}
+        print("[IdealRetriever] initialized (oracle)")
+
+    def build_index(self, docs: List[str], q2a: Dict[str, str] = None):
+        self.docs = docs
+        if q2a is not None:
+            self.q2a = q2a
+        print(f"[IdealRetriever] built: {len(docs)} docs, {len(self.q2a)} q2a mappings")
+
+    def set_q2a(self, q2a: Dict[str, str]):
+        """运行时注入 query->answer 映射（DC-MIA 用 target_kb 的 query 构造）。"""
+        self.q2a = q2a
+
+    def retrieve(self, query: str, top_k: int) -> List[str]:
+        if not self.docs:
+            return []
+        # 完美情况：query 在 KB → 返回对应 answer + 其他 doc
+        if query in self.q2a:
+            answer = self.q2a[query]
+            others = [d for d in self.docs if d != answer]
+            return [answer] + others[:max(0, top_k - 1)]
+        # query 不在 KB（non-member）→ 返回 KB 中前 top_k doc
+        return self.docs[:top_k]
+
+    def encode(self, text: str) -> np.ndarray:
+        raise NotImplementedError("IdealRetriever 不支持 encode()（需配合 embedder 实例用 cosine）")
+
+
+# ============================================================================
 # Mock Retriever: 随机向量（dev/CI 用）
 # ============================================================================
 
@@ -184,13 +233,16 @@ def build_retriever_from_config(embedding_model: str, device: str = "auto"):
       minilm / MiniLM / all-MiniLM-L6-v2 → FAISS + MiniLM
       bge    / BGE / BAAI/bge-*           → FAISS + BGE-en
       bm25   / bm25-okapi                 → rank_bm25 稀疏
-      mock   / random                     → 随机向量
+      ideal  / oracle                      → 完美检索（论文 §6.2.3）
+      mock   / random                      → 随机向量
     device: "auto" / "cuda" / "cpu" / "cuda:0"
     """
     if embedding_model in ("mock", "random"):
         return MockRetriever()
     if embedding_model in ("bm25", "bm25-okapi"):
         return BM25Retriever()
+    if embedding_model in ("ideal", "oracle"):
+        return IdealRetriever()
     if embedding_model.startswith("BAAI/") or embedding_model.lower() == "bge":
         return DenseRetriever(model_name=embedding_model, kind="bge", device=device)
     if "MiniLM" in embedding_model or embedding_model == "minilm":

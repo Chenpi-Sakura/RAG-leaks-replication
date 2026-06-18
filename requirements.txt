@@ -21,6 +21,10 @@ faiss-cpu
 rank-bm25
 Pillow
 
+# 数据集 + 评估指标
+datasets
+rouge-score
+
 # 工具
 python-dotenv
 tenacity

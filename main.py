@@ -150,6 +150,12 @@ def run_one_seed(cfg: ExperimentConfig, seed: int, out_dir: Path) -> dict:
     )
     target_rag.build_index(splits["target_kb"])
 
+    # Ideal retriever 模式：注入 q2a 映射
+    if retriever.kind == "ideal":
+        q2a = {s["query"]: s["answer"] for s in splits["target_kb"]}
+        retriever.set_q2a(q2a)
+        print(f"[Main] IdealRetriever: 注入了 {len(q2a)} 个 q2a 映射")
+
     target_ids = {s["id"] for s in splits["target_kb"]}
 
     # 4) DC-MIA 阈值
@@ -158,6 +164,7 @@ def run_one_seed(cfg: ExperimentConfig, seed: int, out_dir: Path) -> dict:
         data_pool=splits["reference_pool"],
         retriever=retriever,
         per_sample_seed=cfg.attack.per_sample_seed,
+        metric=cfg.attack.metric,
     )
     if cfg.attack.skip_phase_1:
         tau_1 = None
