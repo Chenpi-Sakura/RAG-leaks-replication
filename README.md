@@ -40,19 +40,43 @@
 
 ---
 
+## ⚡ TL;DR — 给赶时间的人
+
+```bash
+# 1. 环境（conda 强烈推荐，避免 torch / vllm 版本冲突）
+conda create -n rag-leaks python=3.11 -y
+conda activate rag-leaks
+pip install vllm
+pip install -r requirements.txt --no-deps
+
+# 2. 数据（从镜像下 3 个数据集，~5 分钟）
+bash download_all.sh
+
+# 3. 跑（echo 后端不烧钱，验流程；真 LLM 见下方配置）
+cp .env.example .env
+echo "LLM_KIND=echo" > .env
+PYTHONIOENCODING=utf-8 python main.py --config configs/llama3-8b-healthcaremagic.yaml
+```
+
+详细步骤见下面"🚀 完整端到端示例"章节。
+
+---
+
 ## 🚀 完整端到端示例（从 0 到跑出 AUC 数字）
 
 按顺序执行，**全套下来约 30-60 分钟**（含 vLLM 装包；不计跑实验时间）。
 
-### Step 1：创建环境（conda 推荐）
+### Step 1：用 conda 创建环境（**强烈推荐**）
 
 ```bash
-# 用 conda / mamba / micromamba 都行；这里用 conda
+# 用 conda（推荐）/ mamba / micromamba 都行；这里用 conda
+# ⚠️ 必须用 conda，不要直接用系统 python：vLLM 对 torch 版本敏感，
+#    conda 环境能避免和系统包冲突
 conda create -n rag-leaks python=3.11 -y
 conda activate rag-leaks
 
-# ⚠️ 关键：先装 vllm（拉它兼容的 torch/transformers），
-#          再装其他（适配已装的 torch，避免版本冲突）
+# 安装顺序关键：先装 vllm（拉它兼容的 torch/transformers），
+#              再装其他（适配已装的 torch，避免版本冲突）
 pip install vllm
 pip install -r requirements.txt --no-deps
 
