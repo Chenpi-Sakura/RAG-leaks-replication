@@ -31,6 +31,7 @@ class RAGConfig:
     #   "minilm"            → FAISS + all-MiniLM-L6-v2（论文 §5.2 默认）
     #   "bge"               → FAISS + BAAI/bge-small-en-v1.5（论文 §6 消融）
     #   "bm25"              → rank_bm25 稀疏检索（论文 §6 消融）
+    #   "ideal"             → 完美检索（论文 §6.2.3 oracle）
     #   "mock"              → 随机向量（dev/CI 用）
     # 也接受完整 HF 模型名（如 "all-MiniLM-L6-v2" / "BAAI/bge-small-en-v1.5"）
     embedding_model: str = "all-MiniLM-L6-v2"
@@ -40,9 +41,13 @@ class RAGConfig:
     device: str = "auto"
     top_k: int = 4
     prompt_template: str = (
-        "Please answer the question based on the provided context.\n"
-        "Context: {context}\nQuestion: {question}"
+        "Please answer the question based on the context.\n"
+        "Context: {context}\nQuestion: {query}"
     )
+    # AgNews 专用 prompt 模板（论文 §5.2）
+    agnews_prompt: str = "Complete the sentence based on the context: {context}"
+    # §7.1 无 RAG 对照：跳过 retrieval 直接给 LLM 空 context
+    no_rag: bool = False
 
 
 @dataclass
@@ -51,6 +56,10 @@ class AttackConfig:
     tau_1: str = "auto"                    # "auto" 从 aux_data 扫最优；或写死 float 字符串
     tau_2: str = "auto"                    # "auto" 从混淆区扫最优
     per_sample_seed: bool = True           # 影子 RAG 采样用 sample_id 作种子，保证可复现
+    # §6.2.1 消融：跳过阶段 1，只跑似然比
+    skip_phase_1: bool = False
+    # §7.2 指标切换（cosine 之外可换 ROUGE）
+    metric: str = "cosine"                 # cosine | rouge1 | rouge2 | rougeL | rougeLsum
 
 
 @dataclass
